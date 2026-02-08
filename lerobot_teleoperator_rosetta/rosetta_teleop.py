@@ -77,7 +77,7 @@ class _RosettaTeleopLifecycleNode(Node):
 
         # These will be created in on_configure, None/empty indicates unconfigured
         # Following the demo pattern: check publisher existence and is_activated
-        self._input_buffers: dict[str, tuple[Any, StreamBuffer]] = {}
+        self._input_buffers: dict[str, list[tuple[Any, StreamBuffer]]] = {}
         self._feedback_publishers: dict[str, tuple[Any, Publisher]] = {}
         self._subscriptions: list[Any] = []
 
@@ -101,15 +101,19 @@ class _RosettaTeleopLifecycleNode(Node):
         """
         self.get_logger().info("on_configure() is called.")
 
-        # Create regular subscriptions for inputs (start buffering immediately)
+        # Build input buffers (one per spec, grouped by topic)
         for spec in self._config.input_specs:
             buffer = StreamBuffer.from_spec(spec)
-            self._input_buffers[spec.topic] = (spec, buffer)
+            self._input_buffers.setdefault(spec.topic, []).append((spec, buffer))
+
+        # Subscribe once per unique topic (start buffering immediately)
+        for topic, pairs in self._input_buffers.items():
+            first_spec = pairs[0][0]
             sub = self.create_subscription(
-                get_message(spec.msg_type),
-                spec.topic,
-                partial(self._on_input, spec=spec, buffer=buffer),
-                qos_profile_from_dict(spec.qos) or 10,
+                get_message(first_spec.msg_type),
+                topic,
+                partial(self._on_input_topic, topic=topic),
+                qos_profile_from_dict(first_spec.qos) or 10,
             )
             self._subscriptions.append(sub)
 
@@ -227,11 +231,12 @@ class _RosettaTeleopLifecycleNode(Node):
 
         return TransitionCallbackReturn.SUCCESS
 
-    def _on_input(self, msg, spec, buffer) -> None:
-        """Handle incoming input message."""
+    def _on_input_topic(self, msg, topic: str) -> None:
+        """Handle incoming input: decode per-spec and push to each buffer."""
         fallback_ns = self.get_clock().now().nanoseconds
-        ts_ns = get_message_timestamp_ns(msg, spec, fallback_ns)
-        buffer.push(ts_ns, decode_value(msg, spec))
+        for spec, buffer in self._input_buffers[topic]:
+            ts_ns = get_message_timestamp_ns(msg, spec, fallback_ns)
+            buffer.push(ts_ns, decode_value(msg, spec))
 
     def _on_events(self, msg, spec) -> None:
         """Handle incoming events message."""
@@ -250,12 +255,13 @@ class _RosettaTeleopLifecycleNode(Node):
         action = {}
         now_ns = self.get_clock().now().nanoseconds
 
-        for spec, buffer in self._input_buffers.values():
-            data = buffer.sample(now_ns)
-            if data is None:
-                continue
-            for i, name in enumerate(get_namespaced_names(spec)):
-                action[name] = float(data[i])
+        for pairs in self._input_buffers.values():
+            for spec, buffer in pairs:
+                data = buffer.sample(now_ns)
+                if data is None:
+                    continue
+                for i, name in enumerate(get_namespaced_names(spec)):
+                    action[name] = float(data[i])
 
         return action
 
