@@ -235,7 +235,7 @@ class _RosettaTeleopLifecycleNode(Node):
         """Handle incoming input: decode per-spec and push to each buffer."""
         fallback_ns = self.get_clock().now().nanoseconds
         for spec, buffer in self._input_buffers[topic]:
-            ts_ns = get_message_timestamp_ns(msg, spec, fallback_ns)
+            ts_ns, _ = get_message_timestamp_ns(msg, spec, fallback_ns)
             buffer.push(ts_ns, decode_value(msg, spec))
 
     def _on_events(self, msg, spec) -> None:
